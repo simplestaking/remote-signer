@@ -16,6 +16,11 @@ import bitcoin
 from pyblake2 import blake2b
 import logging
 
+from trezorlib import messages, tezos
+from trezorlib.client import TrezorClient
+from trezorlib.transport import get_transport
+from trezorlib.tools import parse_path
+
 
 class RemoteSigner:
     BLOCK_PREAMBLE = 1
@@ -24,7 +29,7 @@ class RemoteSigner:
     TEST_SIGNATURE = 'p2sigfqcE4b3NZwfmcoePgdFCvDgvUNa6DBp9h7SZ7wUE92cG3hQC76gfvistHBkFidj1Ymsi1ZcrNHrpEjPXQoQybAv6rRxke'
     P256_SIGNATURE = struct.unpack('>L', b'\x36\xF0\x2C\x34')[0]  # results in p2sig prefix when encoded with base58
 
-    def __init__(self, config, payload='', rpc_stub=None):
+    def __init__(self, config, payload='', rpc_stub=None, path="m/44'/1729'/0'"):
         self.keys = config['keys']
         self.payload = payload
         logging.info('Verifying payload')
@@ -40,6 +45,8 @@ class RemoteSigner:
         self.hsm_libfile = config['hsm_lib']
         logging.info('HSM lib is {}'.format(config['hsm_lib']))
         self.node_addr = config['node_addr']
+
+        self.address_n = parse_path(path)
 
     @staticmethod
     def valid_block_format(blockdata):
@@ -86,7 +93,7 @@ class RemoteSigner:
     def sign(self, handle, test_mode=False):
         encoded_sig = ''
         data_to_sign = self.payload
-        logging.info('About to sign {} with key handle {}'.format(data_to_sign, handle))
+        #logging.info('About to sign {} with key handle {}'.format(data_to_sign, handle))
         if self.valid_block_format(data_to_sign):
             logging.info('Block format is valid')
             if self.is_block() or self.is_endorsement():
@@ -96,14 +103,27 @@ class RemoteSigner:
                     if test_mode:
                         return self.TEST_SIGNATURE
                     else:
-                        logging.info('About to sign with HSM client. Slot = {}, lib = {}, handle = {}'.format(self.hsm_slot, self.hsm_libfile, handle))
-                        with HsmClient(slot=self.hsm_slot, pin=self.hsm_pin, pkcs11_lib=self.hsm_libfile) as c:
-                            hashed_data = blake2b(hex_to_bytes(data_to_sign), digest_size=32).digest()
-                            logging.info('Hashed data to sign: {}'.format(hashed_data))
-                            sig = c.sign(handle=handle, data=hashed_data, mechanism=HsmMech.ECDSA)
-                            logging.info('Raw signature: {}'.format(sig))
-                            encoded_sig = RemoteSigner.b58encode_signature(sig)
-                            logging.info('Base58-encoded signature: {}'.format(encoded_sig))
+                        #logging.info('About to sign with HSM client. Slot = {}, lib = {}, handle = {}'.format(self.hsm_slot, self.hsm_libfile, handle))
+                        logging.info('About to sign with Trezor device')
+                        #with HsmClient(slot=self.hsm_slot, pin=self.hsm_pin, pkcs11_lib=self.hsm_libfile) as c:
+                        #    hashed_data = blake2b(hex_to_bytes(data_to_sign), digest_size=32).digest()
+                        #    logging.info('Hashed data to sign: {}'.format(hashed_data))
+                        #    sig = c.sign(handle=handle, data=hashed_data, mechanism=HsmMech.ECDSA)
+                        #    logging.info('Raw signature: {}'.format(sig))
+                        #    encoded_sig = RemoteSigner.b58encode_signature(sig)
+                        #    logging.info('Base58-encoded signature: {}'.format(encoded_sig))
+
+                        logging.info('Getting device')
+                        transport = get_transport()
+                        client = TrezorClient(transport)
+
+                        logging.info('Signing...')
+                        msg = messages.TezosSignDelegatorOp(endorsement=data_to_sign)
+                        sig_msg = tezos.sign_delegator_op(client, address_n, msg)
+                        encoded_sig = sig_msg.signature
+                        logging.info('Base58-encoded signature: {}'.format(encoded_sig))
+
+                        client.close()
                 else:
                     logging.error('Invalid level')
                     raise Exception('Invalid level')
